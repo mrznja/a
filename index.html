@@ -1,0 +1,391 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>arch2ve</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100%;
+            background-color: #f4f4f4;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        .prevent-select {
+            -webkit-user-select: none; /* Safari */
+            -ms-user-select: none; /* IE 10 and IE 11 */
+            user-select: none; /* Standard syntax */
+        }
+
+        canvas {
+            display: block;
+            touch-action: none; /* let us handle all pan/zoom/drag gestures ourselves */
+        }
+
+        #hint {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            font-size: 12px;
+            padding: 8px 14px;
+            border-radius: 20px;
+            pointer-events: none;
+            transition: opacity 0.6s ease;
+            white-space: nowrap;
+        }
+
+            #hint.hidden {
+                opacity: 0;
+            }
+
+        #zoom-controls {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+        }
+
+
+
+            #zoom-controls button:active {
+                background: #eee;
+            }
+    </style>
+</head>
+
+<!-- <p style="font-size: 50px; font-family:consolas; margin-top: 0px; margin-bottom: 0px; margin-left: 10px; margin-right: 10px; color:LightGray; text-align: center"><b>DRAG US AROUND</b></p> -->
+
+<body>
+
+    <div style=" 
+         width: 400px; 
+         height: 0px; 
+         " ; margin-top: 0px; margin-bottom: 0px; margin-left: 0px; margin-right: 0px; text-align: center>
+        <span style="--font-scale: 2; font-family:consolas; font-size: 50px; line-height: 1.15; color: rgba(0, 0, 0, 0.2);" uses="fit-text">
+            <template shadowrootmode="open">
+                <style id="uses-host">
+                    :host(span) {
+                        display: inline-block;
+                    }
+
+                    :host {
+                        position: relative;
+                        transform-origin: center center;
+                        transform: var(--base-translate, translate(0));
+                        display: inline-block;
+                    }
+                </style>
+                <span class="fit-text">
+                    <slot></slot>
+                </span>
+                <style id="fit-text">
+                    :host {
+                        min-width: 1px;
+                        display: inline-block !important;
+                        --font-scale: 3.8817562457455725 !important;
+                        animation: none !important;
+                        will-change: transform;
+                        --rotate-transform: 0deg !important;
+                    }
+
+                    .fit-text {
+                        padding-right: 0px !important;
+                    }
+                </style>
+            </template>
+            <p class="prevent-select">DRAG US AROUND</p>
+</span>
+    </div>
+
+    <canvas id="canvas"></canvas>
+    <div id="hint">drag empty space 2 pan · scroll 2 zoom · DRAG US AROUND !!!!!!!!!!!!!!!!!!!!!!!!!!</div>
+
+
+    <script>(function () {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const hint = document.getElementById('hint');
+
+  // ---------- World state ----------
+  // "camera" describes how world coordinates map to screen coordinates:
+  // screenX = worldX * scale + camera.x
+  // screenY = worldY * scale + camera.y
+  const camera = { x: 0, y: 0, scale: 1 };
+  const MIN_SCALE = 0.1;
+  const MAX_SCALE = 5;
+
+  // Pictures live in world space (unbounded / "infinite").
+  // Replace src values with your own image URLs. Add as many as you like —
+  // they'll auto-arrange into rows of up to 4, wrapping to a new row below.
+  const pictures = [
+    { id: 1, src: 'media/4khto.jpg',   width: 500, height: 500 },
+    { id: 2, src: 'media/3.jpg', width: 500, height: 500 },
+    { id: 3, src: 'https://ajna.life/w/media/bella.jpg', width: 500, height: 500 },
+    { id: 4, src: 'https://ajna.life/w/media/mischief.jpg', width: 500, height: 500 },
+    { id: 5, src: 'https://ajna.life/w/media/makeup.jpg', width: 500, height: 500 },
+    { id: 6, src: 'https://ajna.life/w/media/fft.jpg', width: 500, height: 500 },
+  ];
+
+  const IMAGE_MARGIN = 2; // px gap between spawned images
+  const MAX_PER_ROW = 4;
+
+  // ---------- Lay pictures out in a balanced grid (max 4 per row) ----------
+  let layoutWidth = 0;
+  let layoutHeight = 0;
+  {
+    let cursorX = 0;
+    let cursorY = 0;
+    let rowMaxHeight = 0;
+    let rowWidth = 0;
+
+    pictures.forEach((pic, i) => {
+      if (i > 0 && i % MAX_PER_ROW === 0) {
+        cursorY += rowMaxHeight + IMAGE_MARGIN;
+        cursorX = 0;
+        layoutWidth = Math.max(layoutWidth, rowWidth);
+        rowMaxHeight = 0;
+        rowWidth = 0;
+      }
+      pic.x = cursorX;
+      pic.y = cursorY;
+      cursorX += pic.width + IMAGE_MARGIN;
+      rowWidth = cursorX - IMAGE_MARGIN;
+      rowMaxHeight = Math.max(rowMaxHeight, pic.height);
+    });
+
+    layoutWidth = Math.max(layoutWidth, rowWidth);
+    layoutHeight = cursorY + rowMaxHeight;
+  }
+
+  pictures.forEach(pic => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = pic.src;
+    pic.image = img;
+    pic.loaded = false;
+    img.onload = () => { pic.loaded = true; draw(); };
+  });
+
+  // ---------- Canvas sizing ----------
+  function resizeCanvas() {
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    draw();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // ---------- Coordinate helpers ----------
+  function screenToWorld(sx, sy) {
+    return {
+      x: (sx - camera.x) / camera.scale,
+      y: (sy - camera.y) / camera.scale
+    };
+  }
+
+  function getEventPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  // ---------- Drawing ----------
+  function draw() {
+    ctx.save();
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+
+    ctx.translate(camera.x, camera.y);
+    ctx.scale(camera.scale, camera.scale);
+
+    pictures.forEach(pic => {
+      if (!pic.loaded) return;
+      ctx.drawImage(pic.image, pic.x, pic.y, pic.width, pic.height);
+    });
+
+    ctx.restore();
+  }
+
+  function hitTest(worldPos) {
+    for (let i = pictures.length - 1; i >= 0; i--) {
+      const pic = pictures[i];
+      if (!pic.loaded) continue;
+      if (worldPos.x >= pic.x && worldPos.x <= pic.x + pic.width &&
+          worldPos.y >= pic.y && worldPos.y <= pic.y + pic.height) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  // ---------- Interaction state ----------
+  let draggedImage = null;
+  let dragOffset = { x: 0, y: 0 };
+  let isPanning = false;
+  let panStart = { x: 0, y: 0 };
+  let cameraStart = { x: 0, y: 0 };
+
+  function dismissHint() {
+    hint.classList.add('hidden');
+  }
+
+  // ---- Mouse events ----
+  canvas.addEventListener('mousedown', (e) => {
+    dismissHint();
+    const pos = getEventPos(e);
+    const world = screenToWorld(pos.x, pos.y);
+    const hitIndex = hitTest(world);
+
+    if (hitIndex !== -1) {
+      draggedImage = pictures[hitIndex];
+      dragOffset.x = world.x - draggedImage.x;
+      dragOffset.y = world.y - draggedImage.y;
+      pictures.splice(hitIndex, 1);
+      pictures.push(draggedImage);
+      canvas.style.cursor = 'grabbing';
+    } else {
+      isPanning = true;
+      panStart = { x: e.clientX, y: e.clientY };
+      cameraStart = { x: camera.x, y: camera.y };
+      canvas.style.cursor = 'grabbing';
+    }
+    draw();
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (draggedImage) {
+      const pos = getEventPos(e);
+      const world = screenToWorld(pos.x, pos.y);
+      draggedImage.x = world.x - dragOffset.x;
+      draggedImage.y = world.y - dragOffset.y;
+      draw();
+    } else if (isPanning) {
+      camera.x = cameraStart.x + (e.clientX - panStart.x);
+      camera.y = cameraStart.y + (e.clientY - panStart.y);
+      draw();
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    draggedImage = null;
+    isPanning = false;
+    canvas.style.cursor = 'default';
+  });
+
+  // ---- Wheel zoom (zooms toward cursor) ----
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    dismissHint();
+    const pos = getEventPos(e);
+    const worldBefore = screenToWorld(pos.x, pos.y);
+
+    const zoomFactor = Math.pow(1.0015, -e.deltaY);
+    camera.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, camera.scale * zoomFactor));
+
+    // keep the point under the cursor fixed
+    camera.x = pos.x - worldBefore.x * camera.scale;
+    camera.y = pos.y - worldBefore.y * camera.scale;
+
+    draw();
+  }, { passive: false });
+
+  // ---- Touch events (pan / drag / pinch-zoom) ----
+  let activeTouches = {};
+  let pinchStartDist = null;
+  let pinchStartScale = 1;
+
+  function touchDist(t1, t2) {
+    const dx = t1.clientX - t2.clientX;
+    const dy = t1.clientY - t2.clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  canvas.addEventListener('touchstart', (e) => {
+    dismissHint();
+    e.preventDefault();
+    for (const t of e.changedTouches) activeTouches[t.identifier] = t;
+
+    const touches = Object.values(activeTouches);
+    if (touches.length === 1) {
+      const pos = getEventPos(touches[0]);
+      const world = screenToWorld(pos.x, pos.y);
+      const hitIndex = hitTest(world);
+      if (hitIndex !== -1) {
+        draggedImage = pictures[hitIndex];
+        dragOffset.x = world.x - draggedImage.x;
+        dragOffset.y = world.y - draggedImage.y;
+        pictures.splice(hitIndex, 1);
+        pictures.push(draggedImage);
+      } else {
+        isPanning = true;
+        panStart = { x: touches[0].clientX, y: touches[0].clientY };
+        cameraStart = { x: camera.x, y: camera.y };
+      }
+    } else if (touches.length === 2) {
+      draggedImage = null;
+      isPanning = false;
+      pinchStartDist = touchDist(touches[0], touches[1]);
+      pinchStartScale = camera.scale;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) activeTouches[t.identifier] = t;
+    const touches = Object.values(activeTouches);
+
+    if (touches.length === 1) {
+      if (draggedImage) {
+        const pos = getEventPos(touches[0]);
+        const world = screenToWorld(pos.x, pos.y);
+        draggedImage.x = world.x - dragOffset.x;
+        draggedImage.y = world.y - dragOffset.y;
+        draw();
+      } else if (isPanning) {
+        camera.x = cameraStart.x + (touches[0].clientX - panStart.x);
+        camera.y = cameraStart.y + (touches[0].clientY - panStart.y);
+        draw();
+      }
+    } else if (touches.length === 2 && pinchStartDist) {
+      const newDist = touchDist(touches[0], touches[1]);
+      const midX = (touches[0].clientX + touches[1].clientX) / 2;
+      const midY = (touches[0].clientY + touches[1].clientY) / 2;
+      const rect = canvas.getBoundingClientRect();
+      const pos = { x: midX - rect.left, y: midY - rect.top };
+      const worldBefore = screenToWorld(pos.x, pos.y);
+
+      camera.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE,
+        pinchStartScale * (newDist / pinchStartDist)));
+
+      camera.x = pos.x - worldBefore.x * camera.scale;
+      camera.y = pos.y - worldBefore.y * camera.scale;
+      draw();
+    }
+  }, { passive: false });
+
+  function endTouch(e) {
+    for (const t of e.changedTouches) delete activeTouches[t.identifier];
+    if (Object.keys(activeTouches).length < 2) pinchStartDist = null;
+    if (Object.keys(activeTouches).length === 0) {
+      draggedImage = null;
+      isPanning = false;
+    }
+  }
+  canvas.addEventListener('touchend', endTouch);
+  canvas.addEventListener('touchcancel', endTouch);
+
+
+  // ---------- Init ----------
+  camera.x = (window.innerWidth - layoutWidth * camera.scale) / 2;
+  camera.y = (window.innerHeight - layoutHeight * camera.scale) / 2;
+  resizeCanvas();
+
+  setTimeout(dismissHint, 4000);
+})();</script>
+</body>
+</html>
